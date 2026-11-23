@@ -41,15 +41,17 @@ type Client struct {
 	broker    *net.UDPAddr
 	options   api.Options
 	sessionID api.SessionID
+	epoch     api.Epoch
 	closed    bool
 
 	nextRequestID uint64
 	nextSubID     uint64
 
-	controlResults map[uint64]chan wireResponse
-	publishResults map[uint64]chan wire.PubResultBody
-	subscriptions  map[api.SubscriptionID]subscription
-	seenSequences  map[api.Topic]uint64
+	controlResults  map[uint64]chan wireResponse
+	publishResults  map[uint64]chan wire.PubResultBody
+	redirectResults chan wire.RedirectBody
+	subscriptions   map[api.SubscriptionID]subscription
+	seenSequences   map[api.Topic]uint64
 
 	callbacks    chan func()
 	callbackDone chan struct{}
@@ -91,6 +93,7 @@ func Connect(options api.Options) (*Client, error) {
 		options:        options,
 		controlResults: make(map[uint64]chan wireResponse),
 		publishResults: make(map[uint64]chan wire.PubResultBody),
+		redirectResults: make(chan wire.RedirectBody, 8),
 		subscriptions:  make(map[api.SubscriptionID]subscription),
 		seenSequences:  make(map[api.Topic]uint64),
 		callbacks:      make(chan func(), 128),
@@ -117,6 +120,7 @@ func Connect(options api.Options) (*Client, error) {
 	}
 	c.mu.Lock()
 	c.sessionID = api.SessionID(welcome.SessionID)
+	c.epoch = api.Epoch(welcome.Epoch)
 	c.mu.Unlock()
 	return c, nil
 }
@@ -151,12 +155,23 @@ func (c *Client) Publish(topic api.Topic, payload []byte) (api.PublishResult, er
 	c.mu.Unlock()
 	defer c.removePublishResult(requestID)
 
-	select {
-	case result := <-channel:
-		return api.PublishResult{Outcome: api.PublishOutcome(result.Outcome), SubscriberCount: result.SubscriberCount}, nil
-	case <-time.After(c.options.ControlTimeout):
-		return api.PublishResult{}, ErrControlTimeout
+	for attempt := 0; attempt < 2; attempt++ {
+		c.mu.Lock()
+		broker := cloneUDPAddr(c.broker)
+		c.mu.Unlock()
+		if err := c.udp.SendTo(frame, broker); err != nil {
+			return api.PublishResult{}, err
+		}
+		select {
+		case result := <-channel:
+			return api.PublishResult{Outcome: api.PublishOutcome(result.Outcome), SubscriberCount: result.SubscriberCount}, nil
+		case <-c.redirectResults:
+			continue
+		case <-time.After(c.options.ControlTimeout):
+			return api.PublishResult{}, ErrControlTimeout
+		}
 	}
+	return api.PublishResult{}, ErrControlTimeout
 }
 
 // CreateTopic creates or confirms a dynamic topic.
@@ -258,6 +273,13 @@ func (c *Client) SessionID() api.SessionID {
 	return c.sessionID
 }
 
+// Epoch returns the highest epoch accepted from WELCOME or REDIRECT.
+func (c *Client) Epoch() api.Epoch {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.epoch
+}
+
 func (c *Client) nextRequest() uint64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -283,7 +305,10 @@ func (c *Client) controlRequest(messageType wire.MessageType, body any, expected
 
 	attempts := c.options.ControlRetries + 1
 	for attempt := 0; attempt < attempts; attempt++ {
-		if err := c.udp.SendTo(frame, c.broker); err != nil {
+		c.mu.Lock()
+		broker := cloneUDPAddr(c.broker)
+		c.mu.Unlock()
+		if err := c.udp.SendTo(frame, broker); err != nil {
 			return wireResponse{}, err
 		}
 		select {
@@ -296,6 +321,8 @@ func (c *Client) controlRequest(messageType wire.MessageType, body any, expected
 				return wireResponse{}, fmt.Errorf("client: expected %s, got %s", expected, response.Header.Type)
 			}
 			return response, nil
+		case <-c.redirectResults:
+			continue
 		case <-time.After(c.options.ControlTimeout):
 			continue
 		}
@@ -368,6 +395,21 @@ func (c *Client) dispatch(response wireResponse) {
 			throttledTopic := api.Topic(body.Topic)
 			retry := body.RetryAfterMillis
 			c.enqueueCallback(func() { c.options.OnThrottle(throttledTopic, retry) })
+		}
+	case wire.MessageRedirect:
+		body := response.Body.(wire.RedirectBody)
+		c.mu.Lock()
+		if api.Epoch(body.Epoch) >= c.epoch {
+			address, err := net.ResolveUDPAddr("udp", body.BrokerAddr)
+			if err == nil {
+				c.broker = address
+				c.epoch = api.Epoch(body.Epoch)
+			}
+		}
+		c.mu.Unlock()
+		select {
+		case c.redirectResults <- body:
+		default:
 		}
 	}
 }
@@ -486,4 +528,13 @@ func (c *Client) callbackWorker() {
 	for callback := range c.callbacks {
 		callback()
 	}
+}
+
+func cloneUDPAddr(address *net.UDPAddr) *net.UDPAddr {
+	if address == nil {
+		return nil
+	}
+	copy := *address
+	copy.IP = append(net.IP(nil), address.IP...)
+	return &copy
 }

@@ -11,8 +11,8 @@ var ErrInvalidConfig = errors.New("degrade: invalid configuration")
 type Level uint8
 
 const (
-	LevelNormal Level = 1
-	LevelPressure Level = 2
+	LevelNormal     Level = 1
+	LevelPressure   Level = 2
 	LevelPersistent Level = 3
 )
 
@@ -27,8 +27,8 @@ type Config struct {
 type Monitor struct {
 	mu sync.Mutex
 
-	config Config
-	level Level
+	config        Config
+	level         Level
 	pressureSince time.Time
 }
 

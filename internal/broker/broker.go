@@ -13,6 +13,7 @@ import (
 	"pubsub/internal/queue"
 	"pubsub/internal/session"
 	"pubsub/internal/topic"
+	"pubsub/internal/topology"
 	"pubsub/internal/wire"
 )
 
@@ -27,6 +28,7 @@ type Config struct {
 	Admission   admission.TokenBucketConfig
 	DRRQuantum  uint32
 	Degrade     degrade.Config
+	Topology    *topology.Topology
 }
 
 type OutboundDatagram struct {
@@ -49,6 +51,7 @@ type Broker struct {
 	drr                 *admission.DRR
 	acceptedPublishes   uint64
 	throttledPublishes  uint64
+	topology            *topology.Topology
 }
 
 type subscriptionState struct {
@@ -97,6 +100,16 @@ func New(cfg Config) (*Broker, error) {
 	if err != nil {
 		return nil, err
 	}
+	if cfg.Topology == nil {
+		cfg.Topology, err = topology.New([]topology.Partition{{
+			ID:          0,
+			Epoch:       cfg.Epoch,
+			PrimaryAddr: cfg.NodeAddress,
+		}}, 1)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return &Broker{
 		cfg:                 cfg,
 		sessions:            session.NewManager(),
@@ -106,6 +119,8 @@ func New(cfg Config) (*Broker, error) {
 		controlReplies:      make(map[controlReplyKey][]OutboundDatagram),
 		publisherBuckets:    make(map[string]*admission.Bucket),
 		drr:                 drr,
+		throttledPublishes:  0,
+		topology:            cfg.Topology,
 	}, nil
 }
 
@@ -182,6 +197,10 @@ func (b *Broker) handleHello(from *net.UDPAddr, body wire.HelloBody) ([]Outbound
 }
 
 func (b *Broker) handleCreateTopic(from *net.UDPAddr, body wire.CreateTopicBody) ([]OutboundDatagram, error) {
+	if outbound, redirected := b.redirectIfNotPrimary(from, body.Topic, body.RequestID); redirected {
+		return outbound, nil
+	}
+
 	s, ok := b.sessions.GetByAddress(from)
 	if !ok {
 		return []OutboundDatagram{b.protocolError(from, body.RequestID, api.ErrorSessionNotFound, "session not established; send HELLO first")}, nil
@@ -193,6 +212,10 @@ func (b *Broker) handleCreateTopic(from *net.UDPAddr, body wire.CreateTopicBody)
 }
 
 func (b *Broker) handleDeleteTopic(from *net.UDPAddr, body wire.DeleteTopicBody) ([]OutboundDatagram, error) {
+	if outbound, redirected := b.redirectIfNotPrimary(from, body.Topic, body.RequestID); redirected {
+		return outbound, nil
+	}
+
 	s, ok := b.sessions.GetByAddress(from)
 	if !ok {
 		return []OutboundDatagram{b.protocolError(from, body.RequestID, api.ErrorSessionNotFound, "session not established; send HELLO first")}, nil
@@ -225,6 +248,10 @@ func (b *Broker) handleDeleteTopic(from *net.UDPAddr, body wire.DeleteTopicBody)
 }
 
 func (b *Broker) handleSubscribe(from *net.UDPAddr, body wire.SubscribeBody) ([]OutboundDatagram, error) {
+	if outbound, redirected := b.redirectIfNotPrimary(from, body.Topic, body.RequestID); redirected {
+		return outbound, nil
+	}
+
 	s, ok := b.sessions.GetByAddress(from)
 	if !ok {
 		return []OutboundDatagram{b.protocolError(from, body.RequestID, api.ErrorSessionNotFound, "session not established; send HELLO first")}, nil
@@ -250,6 +277,10 @@ func (b *Broker) handleSubscribe(from *net.UDPAddr, body wire.SubscribeBody) ([]
 }
 
 func (b *Broker) handleUnsubscribe(from *net.UDPAddr, body wire.UnsubscribeBody) ([]OutboundDatagram, error) {
+	if outbound, redirected := b.redirectIfNotPrimary(from, body.Topic, body.RequestID); redirected {
+		return outbound, nil
+	}
+
 	s, ok := b.sessions.GetByAddress(from)
 	if !ok {
 		return []OutboundDatagram{b.protocolError(from, body.RequestID, api.ErrorSessionNotFound, "session not established; send HELLO first")}, nil
@@ -266,6 +297,10 @@ func (b *Broker) handleUnsubscribe(from *net.UDPAddr, body wire.UnsubscribeBody)
 }
 
 func (b *Broker) handlePublish(from *net.UDPAddr, body wire.PublishBody) ([]OutboundDatagram, error) {
+	if outbound, redirected := b.redirectIfNotPrimary(from, body.Topic, body.RequestID); redirected {
+		return outbound, nil
+	}
+
 	sessionInfo, ok := b.sessions.GetByAddress(from)
 	if !ok {
 		return []OutboundDatagram{b.protocolError(from, body.RequestID, api.ErrorSessionNotFound, "session not established; send HELLO first")}, nil
@@ -459,23 +494,45 @@ func (b *Broker) controlAck(to *net.UDPAddr, requestID uint64, operation uint16,
 	return OutboundDatagram{To: copyAddr(to), Payload: frame}
 }
 
+func (b *Broker) redirectIfNotPrimary(from *net.UDPAddr, topicName string, requestID uint64) ([]OutboundDatagram, bool) {
+	if b.topology == nil {
+		return nil, false
+	}
+	partition, err := b.topology.PartitionFor(topicName)
+	if err != nil {
+		return nil, false
+	}
+	if partition.PrimaryAddr == b.cfg.NodeAddress {
+		return nil, false
+	}
+	frame, err := encodeFrame(wire.MessageRedirect, wire.RedirectBody{
+		Topic:      topicName,
+		BrokerAddr: partition.PrimaryAddr,
+		Epoch:      partition.Epoch,
+	})
+	if err != nil {
+		return []OutboundDatagram{b.protocolError(from, requestID, api.ErrorInternal, err.Error())}, true
+	}
+	return []OutboundDatagram{{To: copyAddr(from), Payload: frame}}, true
+}
+
 type Metrics struct {
 	Publishers      int
 	Subscriptions   int
-	Accepted         uint64
-	Throttled        uint64
-	DroppedMessages  uint64
-	DroppedBytes     uint64
+	Accepted        uint64
+	Throttled       uint64
+	DroppedMessages uint64
+	DroppedBytes    uint64
 }
 
 func (b *Broker) Metrics() Metrics {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	metrics := Metrics{
-		Publishers: len(b.publisherBuckets),
+		Publishers:    len(b.publisherBuckets),
 		Subscriptions: len(b.subscriptions),
-		Accepted: b.acceptedPublishes,
-		Throttled: b.throttledPublishes,
+		Accepted:      b.acceptedPublishes,
+		Throttled:     b.throttledPublishes,
 	}
 	for _, state := range b.subscriptions {
 		stats := state.Queue.Stats()

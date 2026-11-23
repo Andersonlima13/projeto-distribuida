@@ -8,6 +8,7 @@ import (
 	"pubsub/api"
 	"pubsub/internal/admission"
 	"pubsub/internal/queue"
+	"pubsub/internal/topology"
 	"pubsub/internal/wire"
 )
 
@@ -164,6 +165,39 @@ func TestPublishBurstReturnsThrottle(t *testing.T) {
 	metrics := b.Metrics()
 	if metrics.Accepted != 1 || metrics.Throttled != 1 {
 		t.Fatalf("metrics = %+v", metrics)
+	}
+}
+
+func TestCreateTopicRedirectsToTopologyPrimary(t *testing.T) {
+	staticTopology, err := topology.New([]topology.Partition{{
+		ID: 0, Epoch: 9, PrimaryAddr: "127.0.0.1:9001", ReplicaAddr: "127.0.0.1:9101",
+	}}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := New(Config{
+		NodeAddress: "127.0.0.1:9000",
+		Epoch: 9,
+		QueueLimits: queue.Limits{MaxMessages: 8, MaxBytes: 1024},
+		Topology: staticTopology,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	from := udpAddr(t, "127.0.0.1", 10001)
+	mustHandle(t, b, from, wire.MessageHello, wire.HelloBody{RequestID: 1, ClientID: "client-a", Role: wire.RoleBoth})
+
+	outbound := mustHandle(t, b, from, wire.MessageCreateTopic, wire.CreateTopicBody{RequestID: 2, Topic: "score"})
+	if len(outbound) != 1 {
+		t.Fatalf("outbound length = %d, want 1", len(outbound))
+	}
+	h, body := decodeDatagram(t, outbound[0].Payload)
+	if h.Type != wire.MessageRedirect {
+		t.Fatalf("type = %s, want REDIRECT", h.Type)
+	}
+	redirect := body.(wire.RedirectBody)
+	if redirect.Topic != "score" || redirect.BrokerAddr != "127.0.0.1:9001" || redirect.Epoch != 9 {
+		t.Fatalf("redirect = %+v", redirect)
 	}
 }
 

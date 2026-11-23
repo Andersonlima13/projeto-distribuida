@@ -299,6 +299,10 @@ Evoluir de no unico para roteamento por particao.
 - Topicos distintos roteados ao primario correto.
 - Redirect transparente para a aplicacao.
 
+### Status da Fase G
+
+**Concluida no estado atual:** topologia estatica com particoes, hash deterministico por topico, epoch por particao, promocao de replica, REDIRECT no broker e atualizacao de rota/epoch no cliente.
+
 ---
 
 ## Fase H - Replica de Controle e Failover
@@ -428,10 +432,10 @@ Use este checklist como trilha rapida de acompanhamento:
 
 ## 6. Proxima Acao Imediata
 
-Iniciar pela Fase G (Particoes e Topologia Estatica):
+Iniciar pela Fase H (Replica de Controle e Failover):
 
-- implementar topologia estatica de particoes,
-- definir primario, replica e epoch por particao,
-- calcular particao por hash consistente de topico,
-- implementar REDIRECT,
-- atualizar rota no cliente.
+- implementar heartbeats primario/replca,
+- promover replica com epoch maior,
+- replicar topicos e inscricoes,
+- implementar RESUME no cliente,
+- representar perda pós-failover por GAP.
