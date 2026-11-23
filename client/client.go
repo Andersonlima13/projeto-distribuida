@@ -145,9 +145,6 @@ func (c *Client) Publish(topic api.Topic, payload []byte) (api.PublishResult, er
 	if err != nil {
 		return api.PublishResult{}, err
 	}
-	if err := c.udp.SendTo(frame, c.broker); err != nil {
-		return api.PublishResult{}, err
-	}
 
 	channel := make(chan wire.PubResultBody, 1)
 	c.mu.Lock()
@@ -155,23 +152,21 @@ func (c *Client) Publish(topic api.Topic, payload []byte) (api.PublishResult, er
 	c.mu.Unlock()
 	defer c.removePublishResult(requestID)
 
-	for attempt := 0; attempt < 2; attempt++ {
-		c.mu.Lock()
-		broker := cloneUDPAddr(c.broker)
-		c.mu.Unlock()
-		if err := c.udp.SendTo(frame, broker); err != nil {
-			return api.PublishResult{}, err
-		}
-		select {
-		case result := <-channel:
-			return api.PublishResult{Outcome: api.PublishOutcome(result.Outcome), SubscriberCount: result.SubscriberCount}, nil
-		case <-c.redirectResults:
-			continue
-		case <-time.After(c.options.ControlTimeout):
-			return api.PublishResult{}, ErrControlTimeout
-		}
+	c.mu.Lock()
+	broker := cloneUDPAddr(c.broker)
+	c.mu.Unlock()
+	if err := c.udp.SendTo(frame, broker); err != nil {
+		return api.PublishResult{}, err
 	}
-	return api.PublishResult{}, ErrControlTimeout
+
+	select {
+	case result := <-channel:
+		return api.PublishResult{Outcome: api.PublishOutcome(result.Outcome), SubscriberCount: result.SubscriberCount}, nil
+	case <-c.redirectResults:
+		return api.PublishResult{}, ErrControlTimeout
+	case <-time.After(c.options.ControlTimeout):
+		return api.PublishResult{}, ErrControlTimeout
+	}
 }
 
 // CreateTopic creates or confirms a dynamic topic.

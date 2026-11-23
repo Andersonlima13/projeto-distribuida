@@ -1,0 +1,24 @@
+topology_version: 1
+partitions:
+  - id: 0
+    epoch: 1
+    primary: 127.0.0.1:9000
+    replica: 127.0.0.1:9100
+
+broker:
+  queue_messages: 1024
+  queue_bytes: 1048576
+  heartbeat_timeout: 5s
+
+admission:
+  rate_per_second: 100
+  burst: 20
+  drr_quantum: 1024
+
+degradation:
+  pressure_messages: 512
+  pressure_bytes: 524288
+  persistent_for: 30s
+
+limits:
+  udp_datagram_bytes: 1200

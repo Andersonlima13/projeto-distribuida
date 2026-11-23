@@ -38,3 +38,31 @@ type Error struct {
 func (e Error) Error() string {
 	return e.Message
 }
+
+// String returns the stable diagnostic name for an ErrorCode.
+func (c ErrorCode) String() string {
+	switch c {
+	case ErrorUnknown:
+		return "UNKNOWN"
+	case ErrorInvalidRequest:
+		return "INVALID_REQUEST"
+	case ErrorUnsupportedVersion:
+		return "UNSUPPORTED_VERSION"
+	case ErrorTopicNotFound:
+		return "TOPIC_NOT_FOUND"
+	case ErrorSessionNotFound:
+		return "SESSION_NOT_FOUND"
+	case ErrorPayloadTooLarge:
+		return "PAYLOAD_TOO_LARGE"
+	case ErrorThrottled:
+		return "THROTTLED"
+	case ErrorStaleEpoch:
+		return "STALE_EPOCH"
+	case ErrorUnavailable:
+		return "UNAVAILABLE"
+	case ErrorInternal:
+		return "INTERNAL"
+	default:
+		return "UNKNOWN"
+	}
+}

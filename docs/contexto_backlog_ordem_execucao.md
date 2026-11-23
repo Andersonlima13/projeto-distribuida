@@ -423,6 +423,41 @@ Finalizar o desenvolvimento com criterio de pronto de produto.
 
 ---
 
+## Status da Fase J
+
+**Concluída no estado atual:**
+
+- API pública revisada e complementada com nomes estáveis para códigos de erro.
+- Compatibilidade de protocolo v1 preservada: versão 1, 17 tipos de mensagem, datagrama máximo de 1200 bytes e codec determinístico.
+- Erros padronizados com código estável e mensagem diagnóstica.
+- Ciclo de vida da biblioteca revisado; `PUBLISH` usa envio único e não retransmite no plano de dados.
+- Exemplo executável `cmd/demo`, broker operacional `cmd/broker` e benchmark `cmd/bench` disponíveis.
+- Makefile adiciona comandos de teste, build, benchmark, broker e demo.
+- Configuração estática de exemplo publicada em `configs/cluster-example.yaml`.
+- Guia rápido de operação e limites conhecidos publicado em `README.md`.
+- Evidências JSON/CSV existentes em `results/` para fanout, rajada, assinante lento e failover.
+
+### Lacunas deliberadamente fora da release v1
+
+- Não existe anel físico de mensagens recentes; após falha, `RESUME` reporta intervalo ausente como GAP.
+- Heartbeat, snapshots e promoção estão implementados em biblioteca interna, mas ainda não possuem composição completa de dois processos reais no `cmd/broker`.
+- O gateway WebSocket/WebTransport não faz parte da v1.
+- Topologia, membership, autenticação e criptografia permanecem fora do escopo definido.
+
+### Comandos de validação da release
+
+```sh
+make test
+make build
+make bench
+make broker
+make demo
+```
+
+A regressão unitária, os cenários e a execução dos executáveis devem ser repetidos no ambiente com Go instalado.
+
+---
+
 ## 4. Ordem Recomendada de Execucao Curta (Checklist)
 
 Use este checklist como trilha rapida de acompanhamento:

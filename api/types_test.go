@@ -13,13 +13,30 @@ func TestPublicMessageAndPublishResultCanRepresentPublishLifecycle(t *testing.T)
 		PublishedAt: time.Unix(1, 0),
 		Payload:     []byte("goal"),
 	}
-	if message.Sequence != 0 { t.Fatalf("client-originated sequence = %d, want 0", message.Sequence) }
+	if message.Sequence != 0 {
+		t.Fatalf("client-originated sequence = %d, want 0", message.Sequence)
+	}
 	result := PublishResult{Outcome: PublishDelivered, SubscriberCount: 3}
-	if result.Outcome != PublishDelivered || result.SubscriberCount != 3 { t.Fatalf("result = %+v", result) }
+	if result.Outcome != PublishDelivered || result.SubscriberCount != 3 {
+		t.Fatalf("result = %+v", result)
+	}
 }
 
 func TestPublicErrorPreservesCodeAndMessage(t *testing.T) {
 	err := Error{Code: ErrorThrottled, Message: "publisher rate exceeded"}
-	if err.Error() != "publisher rate exceeded" { t.Fatalf("Error() = %q", err.Error()) }
-	if !errors.As(error(err), new(Error)) { t.Fatal("Error must implement error") }
+	if err.Error() != "publisher rate exceeded" {
+		t.Fatalf("Error() = %q", err.Error())
+	}
+	if !errors.As(error(err), new(Error)) {
+		t.Fatal("Error must implement error")
+	}
+}
+
+func TestErrorCodeStableStringNames(t *testing.T) {
+	if ErrorTopicNotFound.String() != "TOPIC_NOT_FOUND" {
+		t.Fatalf("ErrorTopicNotFound.String() = %q", ErrorTopicNotFound.String())
+	}
+	if ErrorThrottled.String() != "THROTTLED" {
+		t.Fatalf("ErrorThrottled.String() = %q", ErrorThrottled.String())
+	}
 }
