@@ -11,6 +11,7 @@ import (
 	"pubsub/internal/admission"
 	"pubsub/internal/degrade"
 	"pubsub/internal/queue"
+	"pubsub/internal/replication"
 	"pubsub/internal/session"
 	"pubsub/internal/topic"
 	"pubsub/internal/topology"
@@ -29,6 +30,7 @@ type Config struct {
 	DRRQuantum  uint32
 	Degrade     degrade.Config
 	Topology    *topology.Topology
+	HeartbeatTimeout time.Duration
 }
 
 type OutboundDatagram struct {
@@ -52,6 +54,9 @@ type Broker struct {
 	acceptedPublishes   uint64
 	throttledPublishes  uint64
 	topology            *topology.Topology
+	heartbeat           *replication.Heartbeat
+	replicationStore    *replication.Store
+	promoted            bool
 }
 
 type subscriptionState struct {
@@ -96,6 +101,13 @@ func New(cfg Config) (*Broker, error) {
 	if cfg.Degrade.PersistentFor <= 0 {
 		cfg.Degrade.PersistentFor = 30 * time.Second
 	}
+	if cfg.HeartbeatTimeout <= 0 {
+		cfg.HeartbeatTimeout = 5 * time.Second
+	}
+	heartbeat, err := replication.NewHeartbeat(cfg.HeartbeatTimeout)
+	if err != nil {
+		return nil, err
+	}
 	drr, err := admission.NewDRR(cfg.DRRQuantum)
 	if err != nil {
 		return nil, err
@@ -121,6 +133,8 @@ func New(cfg Config) (*Broker, error) {
 		drr:                 drr,
 		throttledPublishes:  0,
 		topology:            cfg.Topology,
+		heartbeat:           heartbeat,
+		replicationStore:    replication.NewStore(),
 	}, nil
 }
 
@@ -165,6 +179,10 @@ func (b *Broker) HandleDatagram(payload []byte, from *net.UDPAddr) ([]OutboundDa
 		outbound, err = b.handleUnsubscribe(from, body.(wire.UnsubscribeBody))
 	case wire.MessagePublish:
 		outbound, err = b.handlePublish(from, body.(wire.PublishBody))
+	case wire.MessageHeartbeat:
+		outbound, err = b.handleHeartbeat(from, body.(wire.HeartbeatBody))
+	case wire.MessageResume:
+		outbound, err = b.handleResume(from, body.(wire.ResumeBody))
 	default:
 		outbound = []OutboundDatagram{b.protocolError(from, 0, api.ErrorInvalidRequest, "message type not supported by single-node skeleton")}
 	}
@@ -432,6 +450,97 @@ func (b *Broker) handlePublish(from *net.UDPAddr, body wire.PublishBody) ([]Outb
 	return outbound, nil
 }
 
+func (b *Broker) handleHeartbeat(from *net.UDPAddr, body wire.HeartbeatBody) ([]OutboundDatagram, error) {
+	b.heartbeat.Mark(time.Now().UTC())
+	frame, err := encodeFrame(wire.MessageHeartbeat, wire.HeartbeatBody{
+		SessionID:          body.SessionID,
+		SentAtUnixNano: time.Now().UTC().UnixNano(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return []OutboundDatagram{{To: copyAddr(from), Payload: frame}}, nil
+}
+
+func (b *Broker) handleResume(from *net.UDPAddr, body wire.ResumeBody) ([]OutboundDatagram, error) {
+	sessionInfo, exists := b.sessions.GetByID(body.SessionID)
+	if !exists {
+		return []OutboundDatagram{b.protocolError(from, body.RequestID, api.ErrorSessionNotFound, "session cannot be resumed")}, nil
+	}
+	if _, err := b.sessions.Upsert(sessionInfo.ClientID, sessionInfo.Role, from, time.Now().UTC()); err != nil {
+		return []OutboundDatagram{b.protocolError(from, body.RequestID, api.ErrorInternal, err.Error())}, nil
+	}
+
+	outbound := make([]OutboundDatagram, 0, len(body.Cursors)+1)
+	for _, cursor := range body.Cursors {
+		current := b.nextSequenceByTopic[topic.Name(cursor.Topic)]
+		if current <= cursor.LastSequence {
+			continue
+		}
+		subscribers, err := b.topics.Subscribers(topic.Name(cursor.Topic))
+		if err != nil {
+			continue
+		}
+		for _, subscriptionID := range subscribers {
+			gapFrame, err := encodeFrame(wire.MessageGap, wire.GapBody{
+				SubscriptionID: string(subscriptionID),
+				Topic:          cursor.Topic,
+				From:           cursor.LastSequence + 1,
+				To:             current,
+			})
+			if err != nil {
+				continue
+			}
+			outbound = append(outbound, OutboundDatagram{To: copyAddr(from), Payload: gapFrame})
+		}
+	}
+	outbound = append(outbound, b.controlAck(from, body.RequestID, operationHello, body.SessionID))
+	return outbound, nil
+}
+
+// ControlSnapshot returns the minimum control state for asynchronous replication.
+func (b *Broker) ControlSnapshot() replication.ControlSnapshot {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return replication.ControlSnapshot{
+		Epoch:        b.cfg.Epoch,
+		TopicState:   b.topics.Snapshot(),
+		SessionState: b.sessions.Snapshot(),
+	}
+}
+
+// ApplyControlSnapshot restores replicated control state into this broker.
+func (b *Broker) ApplyControlSnapshot(snapshot replication.ControlSnapshot) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if topicSnapshot, ok := snapshot.TopicState.(topic.Snapshot); ok {
+		b.topics.Restore(topicSnapshot)
+	}
+	if sessionSnapshot, ok := snapshot.SessionState.([]session.Session); ok {
+		b.sessions.Restore(sessionSnapshot)
+	}
+	if snapshot.Epoch > b.cfg.Epoch {
+		b.cfg.Epoch = snapshot.Epoch
+	}
+}
+
+// PromotePartition performs one-time failover promotion for the broker partition.
+func (b *Broker) PromotePartition(now time.Time) (bool, uint64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if !b.heartbeat.Suspect(now) {
+		return false, b.cfg.Epoch
+	}
+	if !b.heartbeat.Promote() {
+		return false, b.cfg.Epoch
+	}
+	b.cfg.Epoch++
+	b.promoted = true
+	return true, b.cfg.Epoch
+}
 func (b *Broker) protocolError(to *net.UDPAddr, requestID uint64, code api.ErrorCode, message string) OutboundDatagram {
 	frame, err := encodeFrame(wire.MessageError, wire.ErrorBody{RequestID: requestID, Code: uint16(code), Message: message})
 	if err != nil {

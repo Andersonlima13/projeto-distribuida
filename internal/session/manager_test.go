@@ -54,6 +54,36 @@ func TestUpsertValidation(t *testing.T) {
 	}
 }
 
+func TestSnapshotReturnsCopies(t *testing.T) {
+	manager := NewManager()
+	_, err := manager.Upsert("client-1", RoleConsumer, udpAddr(t, "127.0.0.1", 9001), time.Unix(100, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := manager.Snapshot()
+	if len(snapshot) != 1 || snapshot[0].ClientID != "client-1" {
+		t.Fatalf("snapshot = %+v", snapshot)
+	}
+	snapshot[0].Address.Port = 9999
+	again, _ := manager.GetByAddress(udpAddr(t, "127.0.0.1", 9001))
+	if again.Address.Port != 9001 {
+		t.Fatalf("snapshot leaked address: %+v", again.Address)
+	}
+}
+
+func TestRestoreReplacesSessionState(t *testing.T) {
+	manager := NewManager()
+	_, _ = manager.Upsert("old", RoleConsumer, udpAddr(t, "127.0.0.1", 9001), time.Unix(100, 0))
+	address := udpAddr(t, "127.0.0.1", 9002)
+	manager.Restore([]Session{{ID: "session-2", ClientID: "new", Role: RoleBoth, Address: address}})
+	if _, exists := manager.GetByAddress(address); !exists {
+		t.Fatal("restored session address not found")
+	}
+	if _, exists := manager.GetByID("1"); exists {
+		t.Fatal("old session survived restore")
+	}
+}
+
 func udpAddr(t *testing.T, ip string, port int) *net.UDPAddr {
 	t.Helper()
 	parsed := net.ParseIP(ip)

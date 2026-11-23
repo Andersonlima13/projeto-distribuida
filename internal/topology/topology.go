@@ -9,16 +9,16 @@ import (
 )
 
 var (
-	ErrInvalidTopology = errors.New("topology: invalid static topology")
+	ErrInvalidTopology  = errors.New("topology: invalid static topology")
 	ErrPartitionMissing = errors.New("topology: partition not found")
 )
 
 // Partition defines primary and replica ownership for one static partition.
 type Partition struct {
-	ID            uint32
-	Epoch         uint64
-	PrimaryAddr   string
-	ReplicaAddr   string
+	ID          uint32
+	Epoch       uint64
+	PrimaryAddr string
+	ReplicaAddr string
 }
 
 // Snapshot is a copy-only representation of cluster topology.
@@ -29,14 +29,14 @@ type Snapshot struct {
 
 // Topology is the concurrency-safe static route table.
 type Topology struct {
-	mu sync.RWMutex
-	version uint64
+	mu         sync.RWMutex
+	version    uint64
 	partitions map[uint32]Partition
-	vNodes []ringNode
+	vNodes     []ringNode
 }
 
 type ringNode struct {
-	hash uint64
+	hash      uint64
 	partition uint32
 }
 
@@ -97,7 +97,7 @@ func (t *Topology) PartitionFor(topic string) (Partition, error) {
 	}
 	if left == len(t.vNodes) {
 		left = 0
-		}
+	}
 	partition, exists := t.partitions[t.vNodes[left].partition]
 	if !exists {
 		return Partition{}, ErrPartitionMissing

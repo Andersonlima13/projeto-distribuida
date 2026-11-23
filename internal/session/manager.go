@@ -102,6 +102,20 @@ func (m *Manager) GetByID(id string) (Session, bool) {
 	return copySession(session), true
 }
 
+// Snapshot returns a copy of all broker-local sessions for control replication.
+func (m *Manager) Snapshot() []Session {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	sessions := make([]Session, 0, len(m.byID))
+	for _, session := range m.byID {
+		sessions = append(sessions, copySession(session))
+	}
+	return sessions
+}
+
 func (m *Manager) GetByAddress(address *net.UDPAddr) (Session, bool) {
 	if address == nil {
 		return Session{}, false
@@ -114,6 +128,29 @@ func (m *Manager) GetByAddress(address *net.UDPAddr) (Session, bool) {
 	}
 	session := m.byID[sessionID]
 	return copySession(session), true
+}
+
+// Restore replaces session state from a replicated control snapshot.
+func (m *Manager) Restore(sessions []Session) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.byID = make(map[string]Session)
+	m.byClient = make(map[string]string)
+	m.byAddr = make(map[string]string)
+	for _, session := range sessions {
+		if session.ID == "" || session.ClientID == "" {
+			continue
+		}
+		copy := copySession(session)
+		m.byID[copy.ID] = copy
+		m.byClient[copy.ClientID] = copy.ID
+		if copy.Address != nil {
+			m.byAddr[copy.Address.String()] = copy.ID
+		}
+	}
 }
 
 func validRole(role uint8) bool {

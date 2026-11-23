@@ -47,6 +47,10 @@ Objetivo: registrar o estado real do projeto no ponto atual e definir uma trilha
   - Token bucket por publicador e DRR de ingresso.
 - `internal/degrade`:
   - Estados normal, pressao e lento persistente por fila de inscricao.
+- `internal/topology`:
+  - Particionamento determinístico por hash, snapshot, primário/replca e epoch.
+- `internal/replication`:
+  - Heartbeat com timeout/promoção única e store de snapshot de controle.
 
 ### 1.3 Validacao do baseline
 
@@ -60,11 +64,16 @@ Objetivo: registrar o estado real do projeto no ponto atual e definir uma trilha
   - `internal/session`
   - `client`
   - `cmd/broker`
+  - `internal/admission`
+  - `internal/degrade`
+  - `internal/topology`
+  - `internal/replication`
 
 ### 1.4 Lacunas principais no ponto atual
 
-1. Falta topologia particionada, redirect e failover.
-2. Falta suite de benchmarks e evidencias finais.
+1. Falta integrar heartbeat/sincronização de snapshots em processos brokers reais.
+2. Falta o anel físico de retomada de mensagens recentes.
+3. Falta suite de benchmarks e evidências finais.
 
 ---
 
@@ -332,6 +341,10 @@ Garantir continuidade sob falha de primario com perda observavel.
 - Sem duplicacao indevida apos failover.
 - Perda eventual sinalizada via GAP.
 
+### Status da Fase H
+
+**Concluida no estado atual:** monitor HEARTBEAT com timeout e promoção única, incremento de epoch em promoção, snapshot/store/restores de tópicos e sessões, handler RESUME no broker e SDK, e GAP dos intervalos ausentes. Ainda falta apenas integrar o envio periódico desses snapshots/heartbeats entre processos reais, além do anel físico opcional de mensagens recentes.
+
 ---
 
 ## Fase I - Observabilidade, Bench e Evidencias Finais
@@ -432,10 +445,10 @@ Use este checklist como trilha rapida de acompanhamento:
 
 ## 6. Proxima Acao Imediata
 
-Iniciar pela Fase H (Replica de Controle e Failover):
+Iniciar pela Fase I (Observabilidade, Bench e Evidencias Finais):
 
-- implementar heartbeats primario/replca,
-- promover replica com epoch maior,
-- replicar topicos e inscricoes,
-- implementar RESUME no cliente,
-- representar perda pós-failover por GAP.
+- consolidar latencia p50/p99/p99.9,
+- medir vazao em mensagens e bytes,
+- separar perda por overflow/failover/rede,
+- criar cenarios steady, burst, slow subscriber e failover,
+- gerar relatorios CSV/JSON reproduziveis.

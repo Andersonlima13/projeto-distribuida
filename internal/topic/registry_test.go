@@ -127,6 +127,19 @@ func TestSnapshotIsSortedAndIndependent(t *testing.T) {
 	}
 }
 
+func TestRestoreReplacesControlState(t *testing.T) {
+	r := NewRegistry()
+	mustCreate(t, r, "old")
+	r.Restore(Snapshot{Topics: []TopicSnapshot{{Name: "score", Subscribers: []SubscriptionID{"sub-a"}}}})
+	if r.Exists("old") {
+		t.Fatal("old topic survived restore")
+	}
+	subscribers, err := r.Subscribers("score")
+	if err != nil || len(subscribers) != 1 || subscribers[0] != "sub-a" {
+		t.Fatalf("restored subscribers = %+v, %v", subscribers, err)
+	}
+}
+
 func mustCreate(t *testing.T, r *Registry, name Name) {
 	t.Helper()
 	created, err := r.Create(name)

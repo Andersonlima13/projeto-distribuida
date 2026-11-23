@@ -177,9 +177,9 @@ func TestCreateTopicRedirectsToTopologyPrimary(t *testing.T) {
 	}
 	b, err := New(Config{
 		NodeAddress: "127.0.0.1:9000",
-		Epoch: 9,
+		Epoch:       9,
 		QueueLimits: queue.Limits{MaxMessages: 8, MaxBytes: 1024},
-		Topology: staticTopology,
+		Topology:    staticTopology,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -198,6 +198,56 @@ func TestCreateTopicRedirectsToTopologyPrimary(t *testing.T) {
 	redirect := body.(wire.RedirectBody)
 	if redirect.Topic != "score" || redirect.BrokerAddr != "127.0.0.1:9001" || redirect.Epoch != 9 {
 		t.Fatalf("redirect = %+v", redirect)
+	}
+}
+
+func TestHeartbeatEchoesToCaller(t *testing.T) {
+	b := mustBroker(t)
+	from := udpAddr(t, "127.0.0.1", 10001)
+	mustHandle(t, b, from, wire.MessageHello, wire.HelloBody{RequestID: 1, ClientID: "client-a", Role: wire.RoleBoth})
+	outbound := mustHandle(t, b, from, wire.MessageHeartbeat, wire.HeartbeatBody{SessionID: "1", SentAtUnixNano: 123})
+	if len(outbound) != 1 {
+		t.Fatalf("heartbeat outbound = %d, want 1", len(outbound))
+	}
+	h, _ := decodeDatagram(t, outbound[0].Payload)
+	if h.Type != wire.MessageHeartbeat {
+		t.Fatalf("type = %s, want HEARTBEAT", h.Type)
+	}
+}
+
+func TestResumeReturnsGapAndControlAck(t *testing.T) {
+	b := mustBroker(t)
+	publisher := udpAddr(t, "127.0.0.1", 10001)
+	subscriber := udpAddr(t, "127.0.0.1", 10002)
+	mustHandle(t, b, publisher, wire.MessageHello, wire.HelloBody{RequestID: 1, ClientID: "publisher", Role: wire.RolePublisher})
+	mustHandle(t, b, subscriber, wire.MessageHello, wire.HelloBody{RequestID: 2, ClientID: "subscriber", Role: wire.RoleConsumer})
+	mustHandle(t, b, publisher, wire.MessageCreateTopic, wire.CreateTopicBody{RequestID: 3, Topic: "score"})
+	mustHandle(t, b, subscriber, wire.MessageSubscribe, wire.SubscribeBody{RequestID: 4, SubscriptionID: "sub-1", Topic: "score"})
+	mustHandle(t, b, publisher, wire.MessagePublish, wire.PublishBody{RequestID: 5, Topic: "score", PublisherID: "publisher", Payload: []byte("goal")})
+
+	outbound := mustHandle(t, b, subscriber, wire.MessageResume, wire.ResumeBody{
+		RequestID: 6,
+		SessionID: "2",
+		Cursors:   []wire.ResumeCursor{{Topic: "score", LastSequence: 0}},
+	})
+	if len(outbound) < 2 {
+		t.Fatalf("resume outbound = %d, want GAP and CONTROL_ACK", len(outbound))
+	}
+	foundGap, foundAck := false, false
+	for _, item := range outbound {
+		h, body := decodeDatagram(t, item.Payload)
+		if h.Type == wire.MessageGap {
+			gap := body.(wire.GapBody)
+			if gap.Topic == "score" && gap.From == 1 && gap.To == 1 {
+				foundGap = true
+			}
+		}
+		if h.Type == wire.MessageControlAck {
+			foundAck = true
+		}
+	}
+	if !foundGap || !foundAck {
+		t.Fatalf("resume did not return GAP/ACK: gap=%t ack=%t", foundGap, foundAck)
 	}
 }
 

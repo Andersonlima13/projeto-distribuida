@@ -190,6 +190,31 @@ func (r *Registry) Snapshot() Snapshot {
 	return snapshot
 }
 
+// Restore replaces control state from a replicated deterministic snapshot.
+func (r *Registry) Restore(snapshot Snapshot) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.topics = make(map[Name]map[SubscriptionID]struct{})
+	r.subscriptionFor = make(map[SubscriptionID]Name)
+	for _, topicSnapshot := range snapshot.Topics {
+		name := topicSnapshot.Name
+		if validateName(name) != nil {
+			continue
+		}
+		r.topics[name] = make(map[SubscriptionID]struct{})
+		for _, id := range topicSnapshot.Subscribers {
+			if validateSubscriptionID(id) != nil {
+				continue
+			}
+			r.topics[name][id] = struct{}{}
+			r.subscriptionFor[id] = name
+		}
+	}
+}
+
 func validateName(name Name) error {
 	value := string(name)
 	if strings.TrimSpace(value) == "" || strings.IndexByte(value, 0) >= 0 {

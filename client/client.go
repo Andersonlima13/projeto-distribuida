@@ -88,17 +88,17 @@ func Connect(options api.Options) (*Client, error) {
 	}
 
 	c := &Client{
-		udp:            udp,
-		broker:         broker,
-		options:        options,
-		controlResults: make(map[uint64]chan wireResponse),
-		publishResults: make(map[uint64]chan wire.PubResultBody),
+		udp:             udp,
+		broker:          broker,
+		options:         options,
+		controlResults:  make(map[uint64]chan wireResponse),
+		publishResults:  make(map[uint64]chan wire.PubResultBody),
 		redirectResults: make(chan wire.RedirectBody, 8),
-		subscriptions:  make(map[api.SubscriptionID]subscription),
-		seenSequences:  make(map[api.Topic]uint64),
-		callbacks:      make(chan func(), 128),
-		callbackDone:   make(chan struct{}),
-		receiveDone:    make(chan struct{}),
+		subscriptions:   make(map[api.SubscriptionID]subscription),
+		seenSequences:   make(map[api.Topic]uint64),
+		callbacks:       make(chan func(), 128),
+		callbackDone:    make(chan struct{}),
+		receiveDone:     make(chan struct{}),
 	}
 	go c.callbackWorker()
 	go c.receiveLoop()
@@ -243,6 +243,24 @@ func (c *Client) Unsubscribe(topic api.Topic, id api.SubscriptionID) error {
 		delete(c.subscriptions, id)
 		c.mu.Unlock()
 	}
+	return err
+}
+
+// Resume asks the broker to continue a session from the last known topic sequences.
+func (c *Client) Resume(cursors map[api.Topic]uint64) error {
+	if c == nil || c.closed {
+		return ErrClosed
+	}
+	requestID := c.nextRequest()
+	resumeCursors := make([]wire.ResumeCursor, 0, len(cursors))
+	for topic, sequence := range cursors {
+		resumeCursors = append(resumeCursors, wire.ResumeCursor{Topic: string(topic), LastSequence: sequence})
+	}
+	_, err := c.controlRequest(wire.MessageResume, wire.ResumeBody{
+		RequestID: requestID,
+		SessionID: string(c.SessionID()),
+		Cursors:   resumeCursors,
+	}, wire.MessageControlAck)
 	return err
 }
 
@@ -395,6 +413,15 @@ func (c *Client) dispatch(response wireResponse) {
 			throttledTopic := api.Topic(body.Topic)
 			retry := body.RetryAfterMillis
 			c.enqueueCallback(func() { c.options.OnThrottle(throttledTopic, retry) })
+		}
+	case wire.MessageHeartbeat:
+		body := response.Body.(wire.HeartbeatBody)
+		frame, err := encodeFrame(wire.MessageHeartbeat, wire.HeartbeatBody{SessionID: body.SessionID, SentAtUnixNano: time.Now().UTC().UnixNano()})
+		if err == nil {
+			c.mu.Lock()
+			broker := cloneUDPAddr(c.broker)
+			c.mu.Unlock()
+			_ = c.udp.SendTo(frame, broker)
 		}
 	case wire.MessageRedirect:
 		body := response.Body.(wire.RedirectBody)
