@@ -28,7 +28,7 @@ func TestEveryDefinedMessageTypeIsValid(t *testing.T) {
 		MessageHello, MessageWelcome, MessageCreateTopic, MessageDeleteTopic,
 		MessageSubscribe, MessageUnsubscribe, MessagePublish, MessagePubResult,
 		MessageDeliver, MessageGap, MessageResume, MessageThrottle,
-		MessageRedirect, MessageHeartbeat, MessageTopicClosed, MessageError,
+		MessageRedirect, MessageHeartbeat, MessageTopicClosed, MessageError, MessageControlAck,
 	}
 	for _, messageType := range types {
 		if !messageType.Valid() {

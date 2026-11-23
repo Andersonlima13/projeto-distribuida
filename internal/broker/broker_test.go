@@ -110,6 +110,26 @@ func TestHandleDatagramRejectsNilSource(t *testing.T) {
 	}
 }
 
+func TestControlRequestReplayReturnsCachedResponse(t *testing.T) {
+	b := mustBroker(t)
+	from := udpAddr(t, "127.0.0.1", 10001)
+	mustHandle(t, b, from, wire.MessageHello, wire.HelloBody{RequestID: 1, ClientID: "client-a", Role: wire.RoleBoth})
+
+	request := wire.CreateTopicBody{RequestID: 42, Topic: "score"}
+	first := mustHandle(t, b, from, wire.MessageCreateTopic, request)
+	second := mustHandle(t, b, from, wire.MessageCreateTopic, request)
+
+	if len(first) != 1 || len(second) != 1 {
+		t.Fatalf("first/second lengths = %d/%d, want 1/1", len(first), len(second))
+	}
+	if string(first[0].Payload) != string(second[0].Payload) {
+		t.Fatalf("cached response differs across replay")
+	}
+	if _, body := decodeDatagram(t, first[0].Payload); body.(wire.ControlAckBody).RequestID != 42 {
+		t.Fatalf("ACK request ID mismatch")
+	}
+}
+
 func mustBroker(t *testing.T) *Broker {
 	t.Helper()
 	b, err := New(Config{NodeAddress: "127.0.0.1:9000", Epoch: 1, QueueLimits: queue.Limits{MaxMessages: 8, MaxBytes: 1024}})

@@ -38,11 +38,13 @@ const (
 	MessageTopicClosed MessageType = 15
 	// MessageError reports a protocol or control-plane error.
 	MessageError MessageType = 16
+	// MessageControlAck confirms one idempotent control-plane operation.
+	MessageControlAck MessageType = 17
 )
 
 // Valid reports whether t is assigned by this protocol version.
 func (t MessageType) Valid() bool {
-	return t >= MessageHello && t <= MessageError
+	return t >= MessageHello && t <= MessageControlAck
 }
 
 // String returns the stable protocol name used by logs and diagnostics.
@@ -80,6 +82,8 @@ func (t MessageType) String() string {
 		return "TOPIC_CLOSED"
 	case MessageError:
 		return "ERROR"
+	case MessageControlAck:
+		return "CONTROL_ACK"
 	default:
 		return "UNKNOWN"
 	}

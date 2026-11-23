@@ -97,6 +97,11 @@ func TestBodyRoundTripForAllMessageTypes(t *testing.T) {
 			messageType: MessageError,
 			body:        ErrorBody{RequestID: 30, Code: 9, Message: "internal"},
 		},
+		{
+			name:        "control ack",
+			messageType: MessageControlAck,
+			body:        ControlAckBody{RequestID: 31, Operation: 4, SessionID: "session-1"},
+		},
 	}
 
 	for _, tt := range tests {

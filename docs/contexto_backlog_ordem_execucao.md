@@ -24,14 +24,19 @@ Objetivo: registrar o estado real do projeto no ponto atual e definir uma trilha
   - Codigos de erro iniciais (`ErrorCode`) e tipo `Error`.
 - `internal/wire`:
   - Header binario v1, validacoes e encode/decode de datagrama.
-  - Enumeracao de tipos de mensagem e validacao de tipo.
-  - **Status**: codec dos corpos ainda pendente.
+  - Enumeracao de tipos de mensagem e codec completo dos corpos v1.
+  - Inclui CONTROL_ACK para confirmacao idempotente de controle.
 - `internal/queue`:
   - Fila bounded por inscrito (mensagens/bytes), `drop-oldest`, coalescencia de GAP.
 - `internal/topic`:
   - Registry de topicos e inscricoes com semantica idempotente.
 - `internal/transport`:
   - Wrapper UDP para send/receive, validacao de budget e close seguro.
+- `internal/session`:
+  - Gerenciamento de sessao em memoria e resolucao por endereco UDP.
+- `internal/broker`:
+  - Broker single-node minimo com fanout, PUB_RESULT, DELIVER/GAP e CONTROL_ACK.
+  - Cache de respostas por endereco, tipo de mensagem e RequestID para replay seguro.
 
 ### 1.3 Validacao do baseline
 
@@ -44,12 +49,11 @@ Objetivo: registrar o estado real do projeto no ponto atual e definir uma trilha
 
 ### 1.4 Lacunas principais no ponto atual
 
-1. Falta codec de corpos wire (mensagens de controle e dados).
-2. Falta broker single-node funcional (orquestracao session/topic/queue/transport).
-3. Falta biblioteca cliente com API publica final e callbacks.
-4. Falta camada de admissao/degradacao.
-5. Falta topologia particionada, redirect e failover.
-6. Falta suite de integracao e benchmark de evidencia final.
+1. Falta broker single-node funcional (orquestracao session/topic/queue/transport).
+2. Falta biblioteca cliente com API publica final e callbacks.
+3. Falta camada de admissao/degradacao.
+4. Falta topologia particionada, redirect e failover.
+5. Falta suite de integracao e benchmark de evidencia final.
 
 ---
 
@@ -189,6 +193,10 @@ Tornar operacoes de controle seguras para retry sem duplicacao de efeito.
 
 - Reenvio de controle nao gera efeitos duplicados.
 - Sem regressao da semantica at-most-once no data plane.
+
+### Status da Fase D
+
+**Concluida no estado atual:** controle com CONTROL_ACK, cache de replay por RequestID, e helper UDP com timeout/reenvio limitado. O PUBLISH continua at-most-once e nao usa retransmissao.
 
 ---
 

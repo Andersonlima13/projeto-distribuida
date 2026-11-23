@@ -153,6 +153,13 @@ type ErrorBody struct {
 	Message   string
 }
 
+// ControlAckBody confirms one idempotent control-plane request.
+type ControlAckBody struct {
+	RequestID uint64
+	Operation uint16
+	SessionID string
+}
+
 // EncodeBody serializes a typed body according to messageType.
 func EncodeBody(messageType MessageType, body any) ([]byte, error) {
 	switch messageType {
@@ -252,6 +259,12 @@ func EncodeBody(messageType MessageType, body any) ([]byte, error) {
 			return nil, bodyTypeError(messageType, body)
 		}
 		return encodeErrorBody(typed)
+	case MessageControlAck:
+		typed, ok := body.(ControlAckBody)
+		if !ok {
+			return nil, bodyTypeError(messageType, body)
+		}
+		return encodeControlAckBody(typed)
 	default:
 		return nil, fmt.Errorf("%w: %d", ErrUnknownMessageType, messageType)
 	}
@@ -292,6 +305,8 @@ func DecodeBody(messageType MessageType, body []byte) (any, error) {
 		return decodeTopicClosedBody(body)
 	case MessageError:
 		return decodeErrorBody(body)
+	case MessageControlAck:
+		return decodeControlAckBody(body)
 	default:
 		return nil, fmt.Errorf("%w: %d", ErrUnknownMessageType, messageType)
 	}
@@ -624,6 +639,23 @@ func decodeErrorBody(data []byte) (ErrorBody, error) {
 	body := ErrorBody{RequestID: r.u64(), Code: r.u16(), Message: r.str()}
 	if err := r.finish(); err != nil {
 		return ErrorBody{}, err
+	}
+	return body, nil
+}
+
+func encodeControlAckBody(body ControlAckBody) ([]byte, error) {
+	w := newBodyWriter()
+	w.u64(body.RequestID)
+	w.u16(body.Operation)
+	w.str(body.SessionID)
+	return w.finish()
+}
+
+func decodeControlAckBody(data []byte) (ControlAckBody, error) {
+	r := newBodyReader(data)
+	body := ControlAckBody{RequestID: r.u64(), Operation: r.u16(), SessionID: r.str()}
+	if err := r.finish(); err != nil {
+		return ControlAckBody{}, err
 	}
 	return body, nil
 }

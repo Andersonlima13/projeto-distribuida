@@ -39,12 +39,27 @@ type Broker struct {
 
 	nextSequenceByTopic map[topic.Name]uint64
 	subscriptions       map[topic.SubscriptionID]subscriptionState
+	controlReplies      map[controlReplyKey][]OutboundDatagram
 }
 
 type subscriptionState struct {
 	SessionID string
 	Queue     *queue.Queue
 }
+
+type controlReplyKey struct {
+	Address     string
+	RequestID   uint64
+	MessageType wire.MessageType
+}
+
+const (
+	operationHello     uint16 = 1
+	operationCreate    uint16 = 2
+	operationDelete    uint16 = 3
+	operationSubscribe uint16 = 4
+	operationUnsub     uint16 = 5
+)
 
 func New(cfg Config) (*Broker, error) {
 	if cfg.QueueLimits.MaxMessages <= 0 || cfg.QueueLimits.MaxBytes <= 0 {
@@ -56,6 +71,7 @@ func New(cfg Config) (*Broker, error) {
 		topics:              topic.NewRegistry(),
 		nextSequenceByTopic: make(map[topic.Name]uint64),
 		subscriptions:       make(map[topic.SubscriptionID]subscriptionState),
+		controlReplies:      make(map[controlReplyKey][]OutboundDatagram),
 	}, nil
 }
 
@@ -64,6 +80,9 @@ func (b *Broker) HandleDatagram(payload []byte, from *net.UDPAddr) ([]OutboundDa
 	if from == nil {
 		return nil, ErrNilSourceAddress
 	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
 
 	header, bodyBytes, err := wire.DecodeDatagram(payload)
 	if err != nil {
@@ -75,22 +94,37 @@ func (b *Broker) HandleDatagram(payload []byte, from *net.UDPAddr) ([]OutboundDa
 		return []OutboundDatagram{b.protocolError(from, 0, api.ErrorInvalidRequest, err.Error())}, nil
 	}
 
+	requestID, isControl := controlRequestID(header.Type, body)
+	if isControl {
+		key := controlReplyKey{Address: from.String(), RequestID: requestID, MessageType: header.Type}
+		if cached, exists := b.controlReplies[key]; exists {
+			return copyOutbound(cached), nil
+		}
+	}
+
+	var outbound []OutboundDatagram
 	switch header.Type {
 	case wire.MessageHello:
-		return b.handleHello(from, body.(wire.HelloBody))
+		outbound, err = b.handleHello(from, body.(wire.HelloBody))
 	case wire.MessageCreateTopic:
-		return b.handleCreateTopic(from, body.(wire.CreateTopicBody))
+		outbound, err = b.handleCreateTopic(from, body.(wire.CreateTopicBody))
 	case wire.MessageDeleteTopic:
-		return b.handleDeleteTopic(from, body.(wire.DeleteTopicBody))
+		outbound, err = b.handleDeleteTopic(from, body.(wire.DeleteTopicBody))
 	case wire.MessageSubscribe:
-		return b.handleSubscribe(from, body.(wire.SubscribeBody))
+		outbound, err = b.handleSubscribe(from, body.(wire.SubscribeBody))
 	case wire.MessageUnsubscribe:
-		return b.handleUnsubscribe(from, body.(wire.UnsubscribeBody))
+		outbound, err = b.handleUnsubscribe(from, body.(wire.UnsubscribeBody))
 	case wire.MessagePublish:
-		return b.handlePublish(from, body.(wire.PublishBody))
+		outbound, err = b.handlePublish(from, body.(wire.PublishBody))
 	default:
-		return []OutboundDatagram{b.protocolError(from, 0, api.ErrorInvalidRequest, "message type not supported by single-node skeleton")}, nil
+		outbound = []OutboundDatagram{b.protocolError(from, 0, api.ErrorInvalidRequest, "message type not supported by single-node skeleton")}
 	}
+
+	if err == nil && isControl {
+		key := controlReplyKey{Address: from.String(), RequestID: requestID, MessageType: header.Type}
+		b.controlReplies[key] = copyOutbound(outbound)
+	}
+	return outbound, err
 }
 
 func (b *Broker) handleHello(from *net.UDPAddr, body wire.HelloBody) ([]OutboundDatagram, error) {
@@ -114,28 +148,27 @@ func (b *Broker) handleHello(from *net.UDPAddr, body wire.HelloBody) ([]Outbound
 }
 
 func (b *Broker) handleCreateTopic(from *net.UDPAddr, body wire.CreateTopicBody) ([]OutboundDatagram, error) {
-	if _, ok := b.sessions.GetByAddress(from); !ok {
+	s, ok := b.sessions.GetByAddress(from)
+	if !ok {
 		return []OutboundDatagram{b.protocolError(from, body.RequestID, api.ErrorSessionNotFound, "session not established; send HELLO first")}, nil
 	}
 	if _, err := b.topics.Create(topic.Name(body.Topic)); err != nil {
 		return []OutboundDatagram{b.protocolError(from, body.RequestID, api.ErrorInvalidRequest, err.Error())}, nil
 	}
-	return nil, nil
+	return []OutboundDatagram{b.controlAck(from, body.RequestID, operationCreate, s.ID)}, nil
 }
 
 func (b *Broker) handleDeleteTopic(from *net.UDPAddr, body wire.DeleteTopicBody) ([]OutboundDatagram, error) {
-	if _, ok := b.sessions.GetByAddress(from); !ok {
+	s, ok := b.sessions.GetByAddress(from)
+	if !ok {
 		return []OutboundDatagram{b.protocolError(from, body.RequestID, api.ErrorSessionNotFound, "session not established; send HELLO first")}, nil
 	}
 	result, err := b.topics.Delete(topic.Name(body.Topic))
 	if err != nil {
 		return []OutboundDatagram{b.protocolError(from, body.RequestID, api.ErrorInvalidRequest, err.Error())}, nil
 	}
-	if !result.Deleted {
-		return nil, nil
-	}
 
-	outbound := make([]OutboundDatagram, 0, len(result.Subscribers))
+	outbound := make([]OutboundDatagram, 0, len(result.Subscribers)+1)
 	for _, id := range result.Subscribers {
 		state, exists := b.subscriptions[id]
 		if !exists {
@@ -153,6 +186,7 @@ func (b *Broker) handleDeleteTopic(from *net.UDPAddr, body wire.DeleteTopicBody)
 		outbound = append(outbound, OutboundDatagram{To: sessionInfo.Address, Payload: frame})
 		delete(b.subscriptions, id)
 	}
+	outbound = append(outbound, b.controlAck(from, body.RequestID, operationDelete, s.ID))
 	return outbound, nil
 }
 
@@ -174,11 +208,12 @@ func (b *Broker) handleSubscribe(from *net.UDPAddr, body wire.SubscribeBody) ([]
 		return []OutboundDatagram{b.protocolError(from, body.RequestID, api.ErrorInvalidRequest, err.Error())}, nil
 	}
 	b.subscriptions[topic.SubscriptionID(body.SubscriptionID)] = subscriptionState{SessionID: s.ID, Queue: q}
-	return nil, nil
+	return []OutboundDatagram{b.controlAck(from, body.RequestID, operationSubscribe, s.ID)}, nil
 }
 
 func (b *Broker) handleUnsubscribe(from *net.UDPAddr, body wire.UnsubscribeBody) ([]OutboundDatagram, error) {
-	if _, ok := b.sessions.GetByAddress(from); !ok {
+	s, ok := b.sessions.GetByAddress(from)
+	if !ok {
 		return []OutboundDatagram{b.protocolError(from, body.RequestID, api.ErrorSessionNotFound, "session not established; send HELLO first")}, nil
 	}
 	_, err := b.topics.Unsubscribe(topic.Name(body.Topic), topic.SubscriptionID(body.SubscriptionID))
@@ -189,7 +224,7 @@ func (b *Broker) handleUnsubscribe(from *net.UDPAddr, body wire.UnsubscribeBody)
 		return []OutboundDatagram{b.protocolError(from, body.RequestID, api.ErrorInvalidRequest, err.Error())}, nil
 	}
 	delete(b.subscriptions, topic.SubscriptionID(body.SubscriptionID))
-	return nil, nil
+	return []OutboundDatagram{b.controlAck(from, body.RequestID, operationUnsub, s.ID)}, nil
 }
 
 func (b *Broker) handlePublish(from *net.UDPAddr, body wire.PublishBody) ([]OutboundDatagram, error) {
@@ -302,4 +337,39 @@ func copyAddr(address *net.UDPAddr) *net.UDPAddr {
 	copy := *address
 	copy.IP = append(net.IP(nil), address.IP...)
 	return &copy
+}
+
+func controlRequestID(messageType wire.MessageType, body any) (uint64, bool) {
+	switch messageType {
+	case wire.MessageHello:
+		return body.(wire.HelloBody).RequestID, true
+	case wire.MessageCreateTopic:
+		return body.(wire.CreateTopicBody).RequestID, true
+	case wire.MessageDeleteTopic:
+		return body.(wire.DeleteTopicBody).RequestID, true
+	case wire.MessageSubscribe:
+		return body.(wire.SubscribeBody).RequestID, true
+	case wire.MessageUnsubscribe:
+		return body.(wire.UnsubscribeBody).RequestID, true
+	case wire.MessageResume:
+		return body.(wire.ResumeBody).RequestID, true
+	default:
+		return 0, false
+	}
+}
+
+func copyOutbound(source []OutboundDatagram) []OutboundDatagram {
+	copied := make([]OutboundDatagram, len(source))
+	for i, item := range source {
+		copied[i] = OutboundDatagram{To: copyAddr(item.To), Payload: append([]byte(nil), item.Payload...)}
+	}
+	return copied
+}
+
+func (b *Broker) controlAck(to *net.UDPAddr, requestID uint64, operation uint16, sessionID string) OutboundDatagram {
+	frame, err := encodeFrame(wire.MessageControlAck, wire.ControlAckBody{RequestID: requestID, Operation: operation, SessionID: sessionID})
+	if err != nil {
+		return b.protocolError(to, requestID, api.ErrorInternal, err.Error())
+	}
+	return OutboundDatagram{To: copyAddr(to), Payload: frame}
 }
