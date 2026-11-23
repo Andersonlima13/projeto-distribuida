@@ -1,0 +1,15 @@
+{
+  "published": 100,
+  "published_bytes": 12800,
+  "delivered": 1000,
+  "delivered_bytes": 128000,
+  "overflow_loss": 25,
+  "failover_loss": 0,
+  "network_loss": 0,
+  "throttled": 0,
+  "p50_millis": 2,
+  "p99_millis": 2,
+  "p99_9_millis": 2,
+  "jain_index": 0,
+  "duration_ns": 0
+}

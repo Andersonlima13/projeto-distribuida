@@ -12,8 +12,8 @@ var (
 
 // Heartbeat tracks liveness for primary-replica or broker-broker links.
 type Heartbeat struct {
-	mu sync.Mutex
-	timeout time.Duration
+	mu       sync.Mutex
+	timeout  time.Duration
 	lastSeen time.Time
 	promoted bool
 }
@@ -79,14 +79,14 @@ func (h *Heartbeat) Promoted() bool {
 
 // ControlSnapshot is the minimum asynchronous-replicated partition state.
 type ControlSnapshot struct {
-	Epoch       uint64
-	TopicState  any
+	Epoch        uint64
+	TopicState   any
 	SessionState any
 }
 
 // Store keeps the last control snapshot received from a primary.
 type Store struct {
-	mu sync.RWMutex
+	mu       sync.RWMutex
 	snapshot ControlSnapshot
 }
 

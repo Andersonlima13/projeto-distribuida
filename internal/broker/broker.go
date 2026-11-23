@@ -23,13 +23,13 @@ var (
 )
 
 type Config struct {
-	NodeAddress string
-	Epoch       uint64
-	QueueLimits queue.Limits
-	Admission   admission.TokenBucketConfig
-	DRRQuantum  uint32
-	Degrade     degrade.Config
-	Topology    *topology.Topology
+	NodeAddress      string
+	Epoch            uint64
+	QueueLimits      queue.Limits
+	Admission        admission.TokenBucketConfig
+	DRRQuantum       uint32
+	Degrade          degrade.Config
+	Topology         *topology.Topology
 	HeartbeatTimeout time.Duration
 }
 
@@ -453,7 +453,7 @@ func (b *Broker) handlePublish(from *net.UDPAddr, body wire.PublishBody) ([]Outb
 func (b *Broker) handleHeartbeat(from *net.UDPAddr, body wire.HeartbeatBody) ([]OutboundDatagram, error) {
 	b.heartbeat.Mark(time.Now().UTC())
 	frame, err := encodeFrame(wire.MessageHeartbeat, wire.HeartbeatBody{
-		SessionID:          body.SessionID,
+		SessionID:      body.SessionID,
 		SentAtUnixNano: time.Now().UTC().UnixNano(),
 	})
 	if err != nil {

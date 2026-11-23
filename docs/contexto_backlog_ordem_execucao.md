@@ -51,6 +51,12 @@ Objetivo: registrar o estado real do projeto no ponto atual e definir uma trilha
   - Particionamento determinístico por hash, snapshot, primário/replca e epoch.
 - `internal/replication`:
   - Heartbeat com timeout/promoção única e store de snapshot de controle.
+- `metrics`:
+  - Collector, percentis p50/p99/p99.9, índice de Jain e exportação JSON/CSV.
+- `scenarios`:
+  - steady-fanout, burst-publisher, slow-subscriber e primary-failover.
+- `cmd/bench`:
+  - listagem e execução dos cenários, com saída JSON/CSV em `results/`.
 
 ### 1.3 Validacao do baseline
 
@@ -380,6 +386,10 @@ Produzir evidencia tecnica de comportamento no cenario C.
 - Evidencias reproduziveis do comportamento esperado sob carga e falha.
 - Parametros criticos calibrados e documentados.
 
+### Status da Fase I
+
+**Concluida no estado atual:** package metrics com percentis, throughput, perdas por causa e Jain; registry de cenários; steady-fanout, burst-publisher, slow-subscriber e primary-failover; comando bench com exportação JSON/CSV e evidências em `results/`.
+
 ---
 
 ## Fase J - Fechamento de Release v1
@@ -445,10 +455,10 @@ Use este checklist como trilha rapida de acompanhamento:
 
 ## 6. Proxima Acao Imediata
 
-Iniciar pela Fase I (Observabilidade, Bench e Evidencias Finais):
+Iniciar pela Fase J (Fechamento da Release v1):
 
-- consolidar latencia p50/p99/p99.9,
-- medir vazao em mensagens e bytes,
-- separar perda por overflow/failover/rede,
-- criar cenarios steady, burst, slow subscriber e failover,
-- gerar relatorios CSV/JSON reproduziveis.
+- revisar API pública e compatibilidade wire v1,
+- padronizar erros, logs e shutdown,
+- criar guia rápido e exemplo broker+cliente,
+- executar regressão unitária e dos cenários,
+- publicar evidências finais em `results/`.

@@ -1,0 +1,2 @@
+published,published_bytes,delivered,delivered_bytes,overflow_loss,failover_loss,network_loss,throttled,p50_ms,p99_ms,p99_9_ms,jain,duration_ns
+208,13312,208,13312,0,0,0,192,1.000000,1.000000,1.000000,0.760940,0
