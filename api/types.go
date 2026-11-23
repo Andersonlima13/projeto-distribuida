@@ -70,3 +70,32 @@ type Gap struct {
 	From  uint64
 	To    uint64
 }
+
+// DeliverCallback receives successfully ordered deliveries for one subscription.
+type DeliverCallback func(Message)
+
+// GapCallback reports a detected sequence interval not delivered to the application.
+type GapCallback func(Gap)
+
+// TopicClosedCallback reports that a subscribed topic was removed.
+type TopicClosedCallback func(Topic)
+
+// ThrottleCallback reports that publisher admission rejected or limited traffic.
+type ThrottleCallback func(Topic, uint32)
+
+// ErrorCallback receives asynchronous protocol and transport errors.
+type ErrorCallback func(Error)
+
+// Options configures one public client session.
+type Options struct {
+	BrokerAddress  string
+	ClientID       ClientID
+	Role           Role
+	ControlTimeout time.Duration
+	ControlRetries int
+	OnDeliver      DeliverCallback
+	OnGap          GapCallback
+	OnTopicClosed  TopicClosedCallback
+	OnThrottle     ThrottleCallback
+	OnError        ErrorCallback
+}

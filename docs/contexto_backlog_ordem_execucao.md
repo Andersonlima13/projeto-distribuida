@@ -21,6 +21,7 @@ Objetivo: registrar o estado real do projeto no ponto atual e definir uma trilha
 
 - `api`:
   - Tipos publicos basicos (`Topic`, `ClientID`, `Message`, `PublishResult`, `Gap`).
+  - Contrato de callbacks e opcoes do cliente (`DeliverCallback`, `GapCallback`, `Options`).
   - Codigos de erro iniciais (`ErrorCode`) e tipo `Error`.
 - `internal/wire`:
   - Header binario v1, validacoes e encode/decode de datagrama.
@@ -37,6 +38,11 @@ Objetivo: registrar o estado real do projeto no ponto atual e definir uma trilha
 - `internal/broker`:
   - Broker single-node minimo com fanout, PUB_RESULT, DELIVER/GAP e CONTROL_ACK.
   - Cache de respostas por endereco, tipo de mensagem e RequestID para replay seguro.
+- `client`:
+  - SDK público com Connect, Publish, Subscribe, Unsubscribe, CreateTopic, DeleteTopic e Close.
+  - Receive loop separado, callbacks assíncronos, controle com retry e deduplicação de sequência por tópico.
+- `cmd/broker`:
+  - Processo UDP mínimo que conecta transport, broker e socket real.
 
 ### 1.3 Validacao do baseline
 
@@ -46,14 +52,16 @@ Objetivo: registrar o estado real do projeto no ponto atual e definir uma trilha
   - `internal/queue`
   - `internal/topic`
   - `internal/transport`
+  - `internal/broker`
+  - `internal/session`
+  - `client`
+  - `cmd/broker`
 
 ### 1.4 Lacunas principais no ponto atual
 
-1. Falta broker single-node funcional (orquestracao session/topic/queue/transport).
-2. Falta biblioteca cliente com API publica final e callbacks.
-3. Falta camada de admissao/degradacao.
-4. Falta topologia particionada, redirect e failover.
-5. Falta suite de integracao e benchmark de evidencia final.
+1. Falta camada de admissao/degradacao.
+2. Falta topologia particionada, redirect e failover.
+3. Falta suite de benchmarks e evidencias finais.
 
 ---
 
@@ -229,6 +237,10 @@ Entregar API de uso da aplicacao com ciclo de vida completo.
 
 - Aplicacao de exemplo publica e consome sem conhecer detalhes do broker.
 - Callback lento da aplicacao nao trava recepcao de rede.
+
+### Status da Fase E
+
+**Concluida no estado atual:** API pública de SDK, receive loop dedicado, callbacks assíncronos, operações de controle com RequestID, publicação at-most-once com PUB_RESULT, deduplicação/deteção de lacunas e integração loopback com o broker. Falta apenas ampliar o ciclo de vida com reconexão/RESUME, que pertence às fases futuras de disponibilidade.
 
 ---
 
@@ -409,8 +421,10 @@ Use este checklist como trilha rapida de acompanhamento:
 
 ## 6. Proxima Acao Imediata
 
-Iniciar pela Fase A (codec de corpos wire), pois ela desbloqueia simultaneamente:
+Iniciar pela Fase F (Admission Control e Degradacao):
 
-- evolucao segura da API publica,
-- implementacao do broker single-node,
-- implementacao do cliente v1.
+- implementar token bucket por publicador,
+- implementar DRR ou politica equivalente definida,
+- emitir THROTTLE,
+- implementar niveis de degradacao de fila,
+- adicionar metricas de fila, descarte e throttling.

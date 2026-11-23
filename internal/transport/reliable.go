@@ -17,8 +17,8 @@ var (
 // ReliableControl sends one control-plane datagram repeatedly and waits for
 // a matching response. PUBLISH and DELIVER must not use this helper.
 type ReliableControl struct {
-	UDP       *UDP
-	Timeout   time.Duration
+	UDP        *UDP
+	Timeout    time.Duration
 	MaxRetries int
 }
 
