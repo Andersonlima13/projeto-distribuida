@@ -43,6 +43,10 @@ Objetivo: registrar o estado real do projeto no ponto atual e definir uma trilha
   - Receive loop separado, callbacks assíncronos, controle com retry e deduplicação de sequência por tópico.
 - `cmd/broker`:
   - Processo UDP mínimo que conecta transport, broker e socket real.
+- `internal/admission`:
+  - Token bucket por publicador e DRR de ingresso.
+- `internal/degrade`:
+  - Estados normal, pressao e lento persistente por fila de inscricao.
 
 ### 1.3 Validacao do baseline
 
@@ -59,9 +63,8 @@ Objetivo: registrar o estado real do projeto no ponto atual e definir uma trilha
 
 ### 1.4 Lacunas principais no ponto atual
 
-1. Falta camada de admissao/degradacao.
-2. Falta topologia particionada, redirect e failover.
-3. Falta suite de benchmarks e evidencias finais.
+1. Falta topologia particionada, redirect e failover.
+2. Falta suite de benchmarks e evidencias finais.
 
 ---
 
@@ -268,6 +271,10 @@ Proteger o sistema sob rajada e assinantes lentos mantendo previsibilidade.
 - Publicador em rajada e limitado sem colapsar o broker.
 - Inscrito lento degrada apenas a propria sessao.
 
+### Status da Fase F
+
+**Concluida no estado atual:** token bucket por publicador, DRR de ingresso, resposta THROTTLE, monitor normal/pressao/persistente para filas, desconexao logica de inscricao persistente lenta e snapshot basico de metricas de admissao e perda.
+
 ---
 
 ## Fase G - Particoes e Topologia Estatica
@@ -421,10 +428,10 @@ Use este checklist como trilha rapida de acompanhamento:
 
 ## 6. Proxima Acao Imediata
 
-Iniciar pela Fase F (Admission Control e Degradacao):
+Iniciar pela Fase G (Particoes e Topologia Estatica):
 
-- implementar token bucket por publicador,
-- implementar DRR ou politica equivalente definida,
-- emitir THROTTLE,
-- implementar niveis de degradacao de fila,
-- adicionar metricas de fila, descarte e throttling.
+- implementar topologia estatica de particoes,
+- definir primario, replica e epoch por particao,
+- calcular particao por hash consistente de topico,
+- implementar REDIRECT,
+- atualizar rota no cliente.

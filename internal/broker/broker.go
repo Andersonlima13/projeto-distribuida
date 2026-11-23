@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"pubsub/api"
+	"pubsub/internal/admission"
+	"pubsub/internal/degrade"
 	"pubsub/internal/queue"
 	"pubsub/internal/session"
 	"pubsub/internal/topic"
@@ -22,6 +24,9 @@ type Config struct {
 	NodeAddress string
 	Epoch       uint64
 	QueueLimits queue.Limits
+	Admission   admission.TokenBucketConfig
+	DRRQuantum  uint32
+	Degrade     degrade.Config
 }
 
 type OutboundDatagram struct {
@@ -40,11 +45,16 @@ type Broker struct {
 	nextSequenceByTopic map[topic.Name]uint64
 	subscriptions       map[topic.SubscriptionID]subscriptionState
 	controlReplies      map[controlReplyKey][]OutboundDatagram
+	publisherBuckets    map[string]*admission.Bucket
+	drr                 *admission.DRR
+	acceptedPublishes   uint64
+	throttledPublishes  uint64
 }
 
 type subscriptionState struct {
 	SessionID string
 	Queue     *queue.Queue
+	Degrade   *degrade.Monitor
 }
 
 type controlReplyKey struct {
@@ -65,6 +75,28 @@ func New(cfg Config) (*Broker, error) {
 	if cfg.QueueLimits.MaxMessages <= 0 || cfg.QueueLimits.MaxBytes <= 0 {
 		return nil, fmt.Errorf("broker: invalid queue limits: %+v", cfg.QueueLimits)
 	}
+	if cfg.Admission.RatePerSecond <= 0 {
+		cfg.Admission.RatePerSecond = 100
+	}
+	if cfg.Admission.Burst <= 0 {
+		cfg.Admission.Burst = 20
+	}
+	if cfg.DRRQuantum == 0 {
+		cfg.DRRQuantum = 1024
+	}
+	if cfg.Degrade.PressureMessages <= 0 {
+		cfg.Degrade.PressureMessages = max(1, cfg.QueueLimits.MaxMessages/2)
+	}
+	if cfg.Degrade.PressureBytes <= 0 {
+		cfg.Degrade.PressureBytes = max(1, cfg.QueueLimits.MaxBytes/2)
+	}
+	if cfg.Degrade.PersistentFor <= 0 {
+		cfg.Degrade.PersistentFor = 30 * time.Second
+	}
+	drr, err := admission.NewDRR(cfg.DRRQuantum)
+	if err != nil {
+		return nil, err
+	}
 	return &Broker{
 		cfg:                 cfg,
 		sessions:            session.NewManager(),
@@ -72,6 +104,8 @@ func New(cfg Config) (*Broker, error) {
 		nextSequenceByTopic: make(map[topic.Name]uint64),
 		subscriptions:       make(map[topic.SubscriptionID]subscriptionState),
 		controlReplies:      make(map[controlReplyKey][]OutboundDatagram),
+		publisherBuckets:    make(map[string]*admission.Bucket),
+		drr:                 drr,
 	}, nil
 }
 
@@ -200,6 +234,10 @@ func (b *Broker) handleSubscribe(from *net.UDPAddr, body wire.SubscribeBody) ([]
 	if err != nil {
 		return nil, err
 	}
+	monitor, err := degrade.New(b.cfg.Degrade)
+	if err != nil {
+		return nil, err
+	}
 	_, err = b.topics.Subscribe(topic.Name(body.Topic), topic.SubscriptionID(body.SubscriptionID))
 	if err != nil {
 		if errors.Is(err, topic.ErrTopicNotFound) {
@@ -207,7 +245,7 @@ func (b *Broker) handleSubscribe(from *net.UDPAddr, body wire.SubscribeBody) ([]
 		}
 		return []OutboundDatagram{b.protocolError(from, body.RequestID, api.ErrorInvalidRequest, err.Error())}, nil
 	}
-	b.subscriptions[topic.SubscriptionID(body.SubscriptionID)] = subscriptionState{SessionID: s.ID, Queue: q}
+	b.subscriptions[topic.SubscriptionID(body.SubscriptionID)] = subscriptionState{SessionID: s.ID, Queue: q, Degrade: monitor}
 	return []OutboundDatagram{b.controlAck(from, body.RequestID, operationSubscribe, s.ID)}, nil
 }
 
@@ -228,9 +266,39 @@ func (b *Broker) handleUnsubscribe(from *net.UDPAddr, body wire.UnsubscribeBody)
 }
 
 func (b *Broker) handlePublish(from *net.UDPAddr, body wire.PublishBody) ([]OutboundDatagram, error) {
-	if _, ok := b.sessions.GetByAddress(from); !ok {
+	sessionInfo, ok := b.sessions.GetByAddress(from)
+	if !ok {
 		return []OutboundDatagram{b.protocolError(from, body.RequestID, api.ErrorSessionNotFound, "session not established; send HELLO first")}, nil
 	}
+
+	publisherID := body.PublisherID
+	if publisherID == "" {
+		publisherID = sessionInfo.ClientID
+	}
+	bucket, exists := b.publisherBuckets[publisherID]
+	if !exists {
+		var err error
+		bucket, err = admission.NewBucket(b.cfg.Admission, time.Now().UTC())
+		if err != nil {
+			return nil, err
+		}
+		b.publisherBuckets[publisherID] = bucket
+		b.drr.Add(publisherID)
+	}
+	if !bucket.Allow(time.Now().UTC()) {
+		b.throttledPublishes++
+		throttleFrame, err := encodeFrame(wire.MessageThrottle, wire.ThrottleBody{
+			Topic:            body.Topic,
+			RetryAfterMillis: 100,
+			Reason:           "publisher rate exceeded",
+		})
+		if err != nil {
+			return nil, err
+		}
+		return []OutboundDatagram{{To: copyAddr(from), Payload: throttleFrame}}, nil
+	}
+	b.acceptedPublishes++
+	b.drr.Consume(publisherID, max(uint32(1), uint32(len(body.Payload))))
 
 	topicName := topic.Name(body.Topic)
 	if !b.topics.Exists(topicName) {
@@ -274,7 +342,24 @@ func (b *Broker) handlePublish(from *net.UDPAddr, body wire.PublishBody) ([]Outb
 			continue
 		}
 
-		_, _ = state.Queue.Enqueue(queue.Item{Sequence: sequence, Payload: body.Payload})
+		_, enqueueErr := state.Queue.Enqueue(queue.Item{Sequence: sequence, Payload: body.Payload})
+		if enqueueErr == nil && state.Degrade != nil {
+			stats := state.Queue.Stats()
+			level := state.Degrade.Observe(stats.QueuedMessages, stats.QueuedBytes, time.Now().UTC())
+			if level == degrade.LevelPersistent {
+				_, _ = b.topics.Unsubscribe(topicName, subscriberID)
+				delete(b.subscriptions, subscriberID)
+				errorFrame, errorErr := encodeFrame(wire.MessageError, wire.ErrorBody{
+					RequestID: body.RequestID,
+					Code:      uint16(api.ErrorUnavailable),
+					Message:   "subscriber disconnected due to persistent queue pressure",
+				})
+				if errorErr == nil {
+					outbound = append(outbound, OutboundDatagram{To: sessionInfo.Address, Payload: errorFrame})
+				}
+				continue
+			}
+		}
 		for {
 			event, hasEvent := state.Queue.Next()
 			if !hasEvent {
@@ -372,4 +457,30 @@ func (b *Broker) controlAck(to *net.UDPAddr, requestID uint64, operation uint16,
 		return b.protocolError(to, requestID, api.ErrorInternal, err.Error())
 	}
 	return OutboundDatagram{To: copyAddr(to), Payload: frame}
+}
+
+type Metrics struct {
+	Publishers      int
+	Subscriptions   int
+	Accepted         uint64
+	Throttled        uint64
+	DroppedMessages  uint64
+	DroppedBytes     uint64
+}
+
+func (b *Broker) Metrics() Metrics {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	metrics := Metrics{
+		Publishers: len(b.publisherBuckets),
+		Subscriptions: len(b.subscriptions),
+		Accepted: b.acceptedPublishes,
+		Throttled: b.throttledPublishes,
+	}
+	for _, state := range b.subscriptions {
+		stats := state.Queue.Stats()
+		metrics.DroppedMessages += stats.DroppedMessages
+		metrics.DroppedBytes += stats.DroppedBytes
+	}
+	return metrics
 }

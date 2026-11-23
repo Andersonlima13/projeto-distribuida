@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"pubsub/api"
+	"pubsub/internal/admission"
 	"pubsub/internal/queue"
 	"pubsub/internal/wire"
 )
@@ -127,6 +128,42 @@ func TestControlRequestReplayReturnsCachedResponse(t *testing.T) {
 	}
 	if _, body := decodeDatagram(t, first[0].Payload); body.(wire.ControlAckBody).RequestID != 42 {
 		t.Fatalf("ACK request ID mismatch")
+	}
+}
+
+func TestPublishBurstReturnsThrottle(t *testing.T) {
+	b, err := New(Config{
+		NodeAddress: "127.0.0.1:9000",
+		Epoch:       1,
+		QueueLimits: queue.Limits{MaxMessages: 8, MaxBytes: 1024},
+		Admission:   admission.TokenBucketConfig{RatePerSecond: 1, Burst: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	publisher := udpAddr(t, "127.0.0.1", 10001)
+	mustHandle(t, b, publisher, wire.MessageHello, wire.HelloBody{RequestID: 1, ClientID: "publisher", Role: wire.RolePublisher})
+	mustHandle(t, b, publisher, wire.MessageCreateTopic, wire.CreateTopicBody{RequestID: 2, Topic: "score"})
+
+	first := mustHandle(t, b, publisher, wire.MessagePublish, wire.PublishBody{RequestID: 3, Topic: "score", PublisherID: "publisher", Payload: []byte("one")})
+	if len(first) != 1 {
+		t.Fatalf("first publish outbound = %d, want 1", len(first))
+	}
+	second := mustHandle(t, b, publisher, wire.MessagePublish, wire.PublishBody{RequestID: 4, Topic: "score", PublisherID: "publisher", Payload: []byte("two")})
+	if len(second) != 1 {
+		t.Fatalf("throttled publish outbound = %d, want 1", len(second))
+	}
+	h, body := decodeDatagram(t, second[0].Payload)
+	if h.Type != wire.MessageThrottle {
+		t.Fatalf("second type = %s, want THROTTLE", h.Type)
+	}
+	throttle := body.(wire.ThrottleBody)
+	if throttle.Topic != "score" || throttle.RetryAfterMillis == 0 {
+		t.Fatalf("throttle = %+v", throttle)
+	}
+	metrics := b.Metrics()
+	if metrics.Accepted != 1 || metrics.Throttled != 1 {
+		t.Fatalf("metrics = %+v", metrics)
 	}
 }
 
